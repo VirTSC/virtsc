@@ -241,6 +241,9 @@ Before saving the copy script, change the **virtsc** path in it to the folder wh
 <details>
 <summary><b>Debian/macOS/WSL</b></summary>
 
+
+If you get the error "**Bad server host key: Invalid key length failure**", add ```-o RSAMinSize=1024``` to the ssh command
+
 The SSH script:
 ```bash
 cat > ~/i1/ssh.sh <<'EOF'
@@ -253,7 +256,6 @@ exec ssh -p 2222 \
     -o MACs=+hmac-sha1 \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
-    -o RSAMinSize=1024 \
     root@127.0.0.1
 EOF
 chmod +x ~/i1/ssh.sh
@@ -273,7 +275,6 @@ exec scp -P 2222 \
     -o MACs=+hmac-sha1 \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
-    -o RSAMinSize=1024 \
     src/agp/libagpnv.c \
     src/glfix/libglfix.c \
     src/is1gl/is1gl.c \
