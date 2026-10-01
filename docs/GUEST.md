@@ -44,7 +44,7 @@ ifconfig_em0="inet 10.0.2.15 netmask 255.255.255.0"
 Press **ESC** to bring up the editor menu. Press **A** to exit. Press **A** again to save changes. You should see that it wrote changes to **/etc/rc.conf**.
 
 <details>
-<summary><b>Special Note about some IntelliSTAR 1(s) auto-replacing and re-genertaing rc.conf</b></summary>
+<summary><b>Special Note about some IntelliSTAR 1(s) auto-replacing and re-generating rc.conf</b></summary>
 
 *Some IntelliSTAR 1 images and/or software configurations may be set to automatically replace your adjusted **/etc/rc.conf** file, which will result in loss of SSH access. It can be restored each time by editing your rc.conf as instructed above, but to prevent an auto-script from replacing your rc.conf, please take this extra step:*
 ```sh
