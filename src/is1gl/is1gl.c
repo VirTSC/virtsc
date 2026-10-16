@@ -382,6 +382,27 @@ struct glstate {
 	int client_sp;
 };
 
+enum list_op_type {
+	LIST_BIND_TEXTURE, LIST_COLOR, LIST_PUSH_ATTRIB,
+	LIST_POP_ATTRIB, LIST_CALL_LIST
+};
+
+/* Replay only the list commands that change values answered by glGet. */
+struct list_op {
+	enum list_op_type type;
+	GLuint name;
+	GLenum target;
+	GLbitfield mask;
+	GLfloat color[4];
+};
+
+struct gl_list {
+	GLuint name;
+	struct list_op *ops;
+	size_t count, capacity;
+	struct gl_list *next;
+};
+
 struct is1gl_ctx {
 	int id;
 	Display *dpy;
@@ -394,12 +415,15 @@ struct is1gl_ctx {
 	 */
 	unsigned int burst_records;
 	unsigned long burst_bytes;
+	struct gl_list *compiling;
+	GLenum list_mode;
 	struct glstate st;
 };
 
 /* Names belong to the share group, which is every context there is. */
 static GLuint next_texture = 1, next_list = 1;
 static int    next_ctx_id = 1;
+static struct gl_list *lists;
 
 /* Which context each thread has current. renderd has five threads. */
 #define MAX_THREADS 16
@@ -569,6 +593,125 @@ static int target_index(GLenum t)
 static void set_error(GLenum e)
 {
 	if (S->error == GL_NO_ERROR) S->error = e;
+}
+
+static struct gl_list *find_list(GLuint name)
+{
+	struct gl_list *list;
+
+	for (list = lists; list; list = list->next)
+		if (list->name == name) return list;
+	return 0;
+}
+
+static void delete_list(GLuint name)
+{
+	struct gl_list **link = &lists;
+
+	while (*link) {
+		struct gl_list *list = *link;
+
+		if (list->name == name) {
+			int i;
+
+			for (i = 0; i < MAX_THREADS; i++) {
+				if (bindings[i].ctx &&
+				    bindings[i].ctx->compiling == list)
+					bindings[i].ctx->compiling = 0;
+			}
+			*link = list->next;
+			free(list->ops);
+			free(list);
+			return;
+		}
+		link = &list->next;
+	}
+}
+
+static void record_list_op(struct list_op op)
+{
+	struct gl_list *list = cur ? cur->compiling : 0;
+	struct list_op *ops;
+	size_t capacity;
+
+	if (!list) return;
+	if (list->count == list->capacity) {
+		capacity = list->capacity ? list->capacity * 2 : 8;
+		ops = realloc(list->ops, capacity * sizeof *ops);
+		if (!ops) {
+			set_error(GL_OUT_OF_MEMORY);
+			return;
+		}
+		list->ops = ops;
+		list->capacity = capacity;
+	}
+	list->ops[list->count++] = op;
+}
+
+static int list_executes(void)
+{
+	return !cur || !cur->compiling ||
+	       cur->list_mode == GL_COMPILE_AND_EXECUTE;
+}
+
+static void state_push_attrib(GLbitfield mask)
+{
+	if (S->attrib_sp < ATTRIB_DEPTH) {
+		S->attrib_stack[S->attrib_sp].mask = mask;
+		memcpy(S->attrib_stack[S->attrib_sp].color, S->color,
+		       sizeof S->color);
+		memcpy(S->attrib_stack[S->attrib_sp].tex, S->tex,
+		       sizeof S->tex);
+		S->attrib_sp++;
+	} else {
+		set_error(GL_STACK_OVERFLOW);
+	}
+}
+
+static void state_pop_attrib(void)
+{
+	if (S->attrib_sp > 0) {
+		S->attrib_sp--;
+		if (S->attrib_stack[S->attrib_sp].mask & GL_CURRENT_BIT)
+			memcpy(S->color, S->attrib_stack[S->attrib_sp].color,
+			       sizeof S->color);
+		if (S->attrib_stack[S->attrib_sp].mask & GL_TEXTURE_BIT)
+			memcpy(S->tex, S->attrib_stack[S->attrib_sp].tex,
+			       sizeof S->tex);
+	} else {
+		set_error(GL_STACK_UNDERFLOW);
+	}
+}
+
+static void execute_list(GLuint name, unsigned int depth)
+{
+	struct gl_list *list = find_list(name);
+	size_t i;
+
+	if (!list || depth >= 64) return;
+	for (i = 0; i < list->count; i++) {
+		const struct list_op *op = &list->ops[i];
+		int target;
+
+		switch (op->type) {
+		case LIST_BIND_TEXTURE:
+			target = target_index(op->target);
+			if (target >= 0) S->tex[target] = op->name;
+			break;
+		case LIST_COLOR:
+			memcpy(S->color, op->color, sizeof S->color);
+			break;
+		case LIST_PUSH_ATTRIB:
+			state_push_attrib(op->mask);
+			break;
+		case LIST_POP_ATTRIB:
+			state_pop_attrib();
+			break;
+		case LIST_CALL_LIST:
+			execute_list(op->name, depth + 1);
+			break;
+		}
+	}
 }
 
 /*
@@ -1062,8 +1205,12 @@ void glViewport(GLint x, GLint y, GLsizei width, GLsizei height)
 
 void glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
 {
+	struct list_op op = { .type = LIST_COLOR,
+	                      .color = { r, g, b, a } };
+
 	gl_enter();
-	if (!S->in_list) {
+	record_list_op(op);
+	if (list_executes()) {
 		S->color[0] = r; S->color[1] = g; S->color[2] = b; S->color[3] = a;
 	}
 	emit_glColor4f(r, g, b, a);
@@ -1073,13 +1220,14 @@ void glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
 void glBindTexture(GLenum target, GLuint texture)
 {
 	struct is1gl_ctx *c;
+	struct list_op op = { .type = LIST_BIND_TEXTURE,
+	                      .name = texture, .target = target };
 	int i;
 
 	gl_enter();
+	record_list_op(op);
 	i = target_index(target);
-	/* Inside glNewList the call is compiled, not executed, so it does not
-	 * change the current binding. glcache got this wrong once. */
-	if (i >= 0 && !S->in_list)
+	if (i >= 0 && list_executes())
 		S->tex[i] = texture;
 	emit_glBindTexture(target, texture);
 	c = cur;
@@ -1106,7 +1254,17 @@ void glEnd(void)
 
 void glNewList(GLuint list, GLenum mode)
 {
+	struct gl_list *entry;
+
 	gl_enter();
+	entry = calloc(1, sizeof *entry);
+	if (entry) {
+		entry->name = list;
+		if (cur) cur->compiling = entry;
+		if (cur) cur->list_mode = mode;
+	} else {
+		set_error(GL_OUT_OF_MEMORY);
+	}
 	S->in_list = 1;
 	emit_glNewList(list, mode);
 	gl_leave();
@@ -1114,58 +1272,62 @@ void glNewList(GLuint list, GLenum mode)
 
 void glEndList(void)
 {
+	struct gl_list *entry;
+
 	gl_enter();
 	S->in_list = 0;
+	entry = cur ? cur->compiling : 0;
+	if (entry) {
+		delete_list(entry->name);
+		entry->next = lists;
+		lists = entry;
+		cur->compiling = 0;
+	}
 	emit_glEndList();
 	gl_leave();
 }
 
 void glCallList(GLuint list)
 {
-	/*
-	 * A list may contain glBindTexture or glColor4f, and we did not record
-	 * what. Forget both rather than answer a later glGet wrongly - a wrong
-	 * answer here corrupts rendering, a forgotten one costs nothing,
-	 * because the next glBindTexture sets it again.
-	 */
-	int i;
+	struct list_op op = { .type = LIST_CALL_LIST, .name = list };
 
 	gl_enter();
-	for (i = 0; i < NTARGETS; i++) S->tex[i] = 0xffffffffu;
+	record_list_op(op);
+	if (list_executes()) execute_list(list, 0);
 	emit_glCallList(list);
+	gl_leave();
+}
+
+void glDeleteLists(GLuint list, GLsizei range)
+{
+	GLsizei i;
+
+	gl_enter();
+	if (range > 0) {
+		for (i = 0; i < range; i++) delete_list(list + i);
+	}
+	emit_glDeleteLists(list, range);
 	gl_leave();
 }
 
 void glPushAttrib(GLbitfield mask)
 {
+	struct list_op op = { .type = LIST_PUSH_ATTRIB, .mask = mask };
+
 	gl_enter();
-	if (S->attrib_sp < ATTRIB_DEPTH) {
-		S->attrib_stack[S->attrib_sp].mask = mask;
-		memcpy(S->attrib_stack[S->attrib_sp].color, S->color,
-		       sizeof S->color);
-		memcpy(S->attrib_stack[S->attrib_sp].tex, S->tex, sizeof S->tex);
-		S->attrib_sp++;
-	} else {
-		set_error(GL_STACK_OVERFLOW);
-	}
+	record_list_op(op);
+	if (list_executes()) state_push_attrib(mask);
 	emit_glPushAttrib(mask);
 	gl_leave();
 }
 
 void glPopAttrib(void)
 {
+	struct list_op op = { .type = LIST_POP_ATTRIB };
+
 	gl_enter();
-	if (S->attrib_sp > 0) {
-		S->attrib_sp--;
-		if (S->attrib_stack[S->attrib_sp].mask & GL_CURRENT_BIT)
-			memcpy(S->color, S->attrib_stack[S->attrib_sp].color,
-			       sizeof S->color);
-		if (S->attrib_stack[S->attrib_sp].mask & GL_TEXTURE_BIT)
-			memcpy(S->tex, S->attrib_stack[S->attrib_sp].tex,
-			       sizeof S->tex);
-	} else {
-		set_error(GL_STACK_UNDERFLOW);
-	}
+	record_list_op(op);
+	if (list_executes()) state_pop_attrib();
 	emit_glPopAttrib();
 	gl_leave();
 }
@@ -1400,6 +1562,26 @@ void glGenTextures(GLsizei n, GLuint *textures)
 	gl_leave();
 }
 
+void glDeleteTextures(GLsizei n, const GLuint *textures)
+{
+	GLsizei i;
+	int target;
+
+	gl_enter();
+	if (n > 0 && textures) {
+		for (target = 0; target < NTARGETS; target++) {
+			for (i = 0; i < n; i++) {
+				if (textures[i] && S->tex[target] == textures[i]) {
+					S->tex[target] = 0;
+					break;
+				}
+			}
+		}
+	}
+	emit_glDeleteTextures(n, textures);
+	gl_leave();
+}
+
 GLuint glGenLists(GLsizei range)
 {
 	GLuint first;
@@ -1555,6 +1737,10 @@ void glXDestroyContext(Display *dpy, GLXContext ctx)
 	if (cur == c) {
 		cur = 0;
 		S = &no_ctx;
+	}
+	if (c->compiling) {
+		free(c->compiling->ops);
+		free(c->compiling);
 	}
 	free(c);
 	gl_leave();

@@ -327,13 +327,6 @@ static void emit_glDeleteLists(GLuint list, GLsizei range)
     put_i32(r + 4, range);
 }
 
-void glDeleteLists(GLuint list, GLsizei range)
-{
-    gl_enter();
-    emit_glDeleteLists(list, range);
-    gl_leave();
-}
-
 static void emit_glNewList(GLuint list, GLenum mode)
 {
     unsigned char *r = ring_record(IS1GL_OP_glNewList, 8);
@@ -541,13 +534,6 @@ static void emit_glDeleteTextures(GLsizei n, const GLuint * textures)
         for (i_ = 0; i_ < (int)(n); i_++)
             put_u32(r + 4 + i_ * 4, textures[i_]);
     }
-}
-
-void glDeleteTextures(GLsizei n, const GLuint * textures)
-{
-    gl_enter();
-    emit_glDeleteTextures(n, textures);
-    gl_leave();
 }
 
 static void emit_glBindTexture(GLenum target, GLuint texture)

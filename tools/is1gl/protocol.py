@@ -116,7 +116,7 @@ OPS = {
     "glNewList":          {"hand": True},   # tracked: compiling or not
     "glEndList":          {"hand": True},
     "glCallList":         {"hand": True},   # tracked: may change bound texture
-    "glDeleteLists":      {},
+    "glDeleteLists":      {"hand": True},
 
     # ---- immediate mode: ~70% of all calls
     "glBegin":            {"hand": True},   # tracked: glGetError is illegal inside
@@ -129,7 +129,7 @@ OPS = {
 
     # ---- texture
     "glGenTextures":      {"local": True},  # names allocated guest-side
-    "glDeleteTextures":   {"arr": ("textures", "n", "GLuint")},
+    "glDeleteTextures":   {"arr": ("textures", "n", "GLuint"), "hand": True},
     "glBindTexture":      {"hand": True},   # tracked: GL_TEXTURE_BINDING_2D
     "glTexParameterf":    {},
     "glTexParameteri":    {},
