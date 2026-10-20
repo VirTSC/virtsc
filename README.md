@@ -11,6 +11,7 @@ VirTSC is a virtual **Thunderstorm card (TSC)** device baked into **QEMU** which
 To set up VirTSC, select the appropriate platform you wish to use:
 - **[Debian-based Linux](docs/build/DEBIAN.md)**
 - **[Fedora/RHEL based Linux](docs/build/FEDORA.md)**
+- **[Arch-based Linux](docs/build/ARCH.md)**
 - **[MacOS](docs/build/MACOS.md)**
 - **[Windows](docs/build/WINDOWS.md)**
 - **[WSL](docs/build/WSL.md)**
